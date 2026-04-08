@@ -9,11 +9,7 @@ import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 
-from src.models import (
-    STATUS_ASSIGNED,
-    STATUS_COMPLETED,
-    TABLES,
-)
+from src.models import STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
 
 
 @st.cache_resource
@@ -33,6 +29,10 @@ def get_client(use_service_role: bool = False) -> Client:
 
 def _execute_select(client: Client, table: str, select_expr: str = "*") -> list[dict[str, Any]]:
     return client.table(table).select(select_expr).execute().data or []
+
+
+def _index_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {row["id"]: row for row in rows if row.get("id") is not None}
 
 
 def get_profiles(client: Client) -> list[dict[str, Any]]:
@@ -136,31 +136,53 @@ def create_assignments(
     return client.table(TABLES.assignments).insert(payload).execute().data or []
 
 
+def _get_assignment_enriched_rows(client: Client, annotator_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """Fetch assignments and enrich rows without relying on FK relation names."""
+    query = client.table(TABLES.assignments).select("*")
+    if annotator_id:
+        query = query.eq("annotator_id", annotator_id)
+    assignments = query.order("assigned_at", desc=False).execute().data or []
+
+    if not assignments:
+        return []
+
+    segment_ids = sorted({row["segment_id"] for row in assignments if row.get("segment_id")})
+    annotator_ids = sorted({row["annotator_id"] for row in assignments if row.get("annotator_id")})
+
+    segments = client.table(TABLES.segments).select("*").in_("id", segment_ids).execute().data or []
+    segments_by_id = _index_by_id(segments)
+
+    document_ids = sorted({row["document_id"] for row in segments if row.get("document_id")})
+    documents = client.table(TABLES.documents).select("*").in_("id", document_ids).execute().data or []
+    documents_by_id = _index_by_id(documents)
+
+    profiles = client.table(TABLES.profiles).select("*").in_("id", annotator_ids).execute().data or []
+    profiles_by_id = _index_by_id(profiles)
+
+    enriched: list[dict[str, Any]] = []
+    for row in assignments:
+        seg = segments_by_id.get(row.get("segment_id"), {})
+        doc = documents_by_id.get(seg.get("document_id"), {}) if seg else {}
+        profile = profiles_by_id.get(row.get("annotator_id"), {})
+        enriched.append(
+            {
+                **row,
+                "segments": {**seg, "documents": doc},
+                "profiles": profile,
+            }
+        )
+
+    return enriched
+
+
 def get_assignments_for_admin(client: Client) -> list[dict[str, Any]]:
-    """Return assignment rows enriched with related segment/document/profile info."""
-    query = (
-        "id,status,assigned_at,completed_at,segment_id,annotator_id,"
-        "segments!inner(id,segment_order,segment_label,document_id,documents!inner(title)),"
-        "profiles!assignments_annotator_id_fkey(email,full_name)"
-    )
-    return client.table(TABLES.assignments).select(query).order("assigned_at", desc=True).execute().data or []
+    """Return assignment rows enriched with segment/document/profile info."""
+    rows = _get_assignment_enriched_rows(client)
+    return sorted(rows, key=lambda r: r.get("assigned_at") or "", reverse=True)
 
 
 def get_assignments_for_annotator(client: Client, user_id: str) -> list[dict[str, Any]]:
-    query = (
-        "id,status,assigned_at,completed_at,segment_id,annotator_id,"
-        "segments!inner(id,segment_order,segment_label,text_content,word_count,document_id,"
-        "documents!inner(id,title,author,publication_year))"
-    )
-    return (
-        client.table(TABLES.assignments)
-        .select(query)
-        .eq("annotator_id", user_id)
-        .order("assigned_at", desc=False)
-        .execute()
-        .data
-        or []
-    )
+    return _get_assignment_enriched_rows(client, annotator_id=user_id)
 
 
 def get_annotations_for_segment_and_user(client: Client, segment_id: str, annotator_id: str) -> list[dict[str, Any]]:
@@ -212,6 +234,18 @@ def mark_assignment_completed(client: Client, assignment_id: str) -> dict[str, A
     )
 
 
+
+def get_annotation_counts_by_segment(client: Client) -> dict[str, int]:
+    """Return annotation counts indexed by segment_id."""
+    rows = client.table(TABLES.annotations).select("segment_id").execute().data or []
+    counts: dict[str, int] = {}
+    for row in rows:
+        segment_id = row.get("segment_id")
+        if not segment_id:
+            continue
+        counts[segment_id] = counts.get(segment_id, 0) + 1
+    return counts
+
 def get_dashboard_counts(client: Client) -> dict[str, int]:
     return {
         "documents": len(_execute_select(client, TABLES.documents, "id")),
@@ -226,20 +260,17 @@ def get_dashboard_counts(client: Client) -> dict[str, int]:
 
 def build_export_dataframe(client: Client) -> pd.DataFrame:
     """Build export dataframe with one row per assignment/segment combination."""
-    query = (
-        "id,status,segment_id,annotator_id,"
-        "segments!inner(id,segment_order,segment_label,text_content,document_id,"
-        "documents!inner(id,title,author,publication_year)),"
-        "profiles!assignments_annotator_id_fkey(email)"
-    )
-    assignments = client.table(TABLES.assignments).select(query).execute().data or []
-    annotations = client.table(TABLES.annotations).select("segment_id,annotator_id,note,themes(id,name)").execute().data or []
+    assignments = _get_assignment_enriched_rows(client)
+    annotations = client.table(TABLES.annotations).select("segment_id,annotator_id,theme_id,note").execute().data or []
+    themes = get_themes(client)
+    themes_by_id = _index_by_id(themes)
 
     ann_index: dict[tuple[str, str], dict[str, Any]] = {}
     for row in annotations:
         key = (row["segment_id"], row["annotator_id"])
         ann_index.setdefault(key, {"themes": [], "note": None})
-        theme = row.get("themes") or {}
+
+        theme = themes_by_id.get(row.get("theme_id"), {})
         if theme.get("name"):
             ann_index[key]["themes"].append(theme["name"])
         if row.get("note") and not ann_index[key]["note"]:

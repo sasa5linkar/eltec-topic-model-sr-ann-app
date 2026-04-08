@@ -38,8 +38,10 @@ def get_current_user(client: Client) -> dict[str, Any]:
 
     default_id = st.session_state.get("selected_user_id") or users[0]["id"]
     options = {f"{u.get('email', 'unknown')} ({u.get('role', '-')})": u["id"] for u in users}
+    labels = list(options.keys())
 
-    selected_label = st.sidebar.selectbox("Development user", options=list(options.keys()))
+    default_index = next((idx for idx, label in enumerate(labels) if options[label] == default_id), 0)
+    selected_label = st.sidebar.selectbox("Development user", options=labels, index=default_index)
     selected_id = options[selected_label]
     st.session_state["selected_user_id"] = selected_id
 

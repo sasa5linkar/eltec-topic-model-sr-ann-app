@@ -17,6 +17,7 @@ from src.db import (
     create_document,
     create_segments,
     create_theme,
+    get_annotation_counts_by_segment,
     get_annotators,
     get_assignments_for_admin,
     get_client,
@@ -158,7 +159,10 @@ else:
 
     segments = get_segments_by_document(client, selected_doc["id"])
     segments_df = pd.DataFrame(segments)
-    st.dataframe(segments_df[["id", "segment_order", "segment_label", "word_count"]], use_container_width=True)
+    if not segments_df.empty:
+        st.dataframe(segments_df[["id", "segment_order", "segment_label", "word_count"]], use_container_width=True)
+    else:
+        st.info("Dokument trenutno nema segmenata.")
 
     ann_map = {f"{a.get('email')} ({a.get('full_name') or '-'})": a for a in annotators}
     selected_ann_label = st.selectbox("Annotator", list(ann_map.keys()))
@@ -184,6 +188,7 @@ st.markdown("---")
 # 7) Progress
 st.subheader("Praćenje progresa")
 admin_assignments = get_assignments_for_admin(client)
+annotation_counts = get_annotation_counts_by_segment(client)
 progress_rows = []
 for row in admin_assignments:
     segment = row.get("segments") or {}
@@ -195,6 +200,7 @@ for row in admin_assignments:
             "segment_order": segment.get("segment_order"),
             "annotator": profile.get("email") or profile.get("full_name"),
             "status": row.get("status"),
+            "annotations_count": annotation_counts.get(segment.get("id"), 0),
             "assigned_at": row.get("assigned_at"),
             "completed_at": row.get("completed_at"),
         }

@@ -66,14 +66,16 @@ def parse_eltec_tei_xml(xml_bytes: bytes) -> ParsedDocument:
         )
 
     sections: list[ParsedSection] = []
-    for idx, div in enumerate(body.findall(".//tei:div", ns), start=1):
+    tei_divs = body.findall("./tei:div", ns) or body.findall(".//tei:div", ns)
+    for idx, div in enumerate(tei_divs, start=1):
         label = _first_text(div, ["./tei:head", "./tei:title"], ns) or f"Chapter {idx}"
         text = _clean_text(" ".join(t for t in div.itertext()))
         if text:
             sections.append(ParsedSection(label=label, text=text))
 
     if not sections:
-        for idx, div in enumerate(body.findall(".//div"), start=1):
+        plain_divs = body.findall("./div") or body.findall(".//div")
+        for idx, div in enumerate(plain_divs, start=1):
             label = _clean_text("".join(div.findtext("head", default=""))) or f"Chapter {idx}"
             text = _clean_text(" ".join(t for t in div.itertext()))
             if text:
