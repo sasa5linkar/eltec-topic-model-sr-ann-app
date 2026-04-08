@@ -27,17 +27,25 @@ from src.db import (
     get_themes,
 )
 from src.eltec_parser import parse_eltec_tei_xml
+from src.errors import AppError
 from src.export_utils import build_export_zip
+from src.logging_utils import get_logger, log_event
 from src.models import ROLE_ADMIN
 from src.segmentation import segment_by_chapters, segment_by_word_count
+
+logger = get_logger("eltec_admin")
 
 st.set_page_config(page_title="Admin", layout="wide")
 st.title("Admin panel")
 
 try:
-    client = get_client(use_service_role=True)
-    user = get_current_user(client)
-except Exception as exc:
+    anon_client = get_client(use_service_role=False)
+    service_client = get_client(use_service_role=True)
+    user = get_current_user(anon_client, service_client)
+except AppError as exc:
+    st.error(str(exc))
+    st.stop()
+except Exception as exc:  # noqa: BLE001
     st.error(f"Greška pri povezivanju: {exc}")
     st.stop()
 
@@ -47,7 +55,7 @@ if user.get("role") != ROLE_ADMIN:
 
 # 1) Dashboard
 st.subheader("Dashboard")
-counts = get_dashboard_counts(client)
+counts = get_dashboard_counts(service_client)
 cols = st.columns(5)
 cols[0].metric("Dokumenti", counts["documents"])
 cols[1].metric("Segmenti", counts["segments"])
@@ -66,7 +74,8 @@ if xml_file is not None:
         st.session_state["parsed_doc"] = parsed
         st.session_state["source_filename"] = xml_file.name
         st.success("XML uspešno parsiran.")
-    except Exception as exc:
+        log_event(logger, "info", "admin_xml_parsed", user_id=user.get("id"), file_name=xml_file.name)
+    except Exception as exc:  # noqa: BLE001
         st.error(f"Greška pri parsiranju XML-a: {exc}")
 
 parsed = st.session_state.get("parsed_doc")
@@ -106,7 +115,7 @@ if parsed:
         if st.button("Potvrdi import dokumenta i segmenata", type="primary"):
             try:
                 doc = create_document(
-                    client,
+                    service_client,
                     title=parsed.title,
                     author=parsed.author,
                     publication_year=parsed.publication_year,
@@ -114,10 +123,18 @@ if parsed:
                     created_by=user["id"],
                 )
                 segments_payload = [{**seg, "document_id": doc["id"]} for seg in candidate_segments]
-                create_segments(client, segments_payload)
+                create_segments(service_client, segments_payload)
                 st.success(f"Dokument sačuvan (ID: {doc['id']}) i {len(segments_payload)} segmenata kreirano.")
-            except Exception as exc:
-                st.error(f"Greška pri čuvanju u bazi: {exc}")
+                log_event(
+                    logger,
+                    "info",
+                    "admin_import_completed",
+                    user_id=user.get("id"),
+                    document_id=doc.get("id"),
+                    segment_count=len(segments_payload),
+                )
+            except AppError as exc:
+                st.error(str(exc))
 
 st.markdown("---")
 
@@ -125,7 +142,7 @@ st.markdown("---")
 st.subheader("Teme")
 col1, col2 = st.columns([2, 1])
 with col1:
-    themes = get_themes(client)
+    themes = get_themes(service_client)
     st.dataframe(pd.DataFrame(themes), use_container_width=True)
 with col2:
     with st.form("theme_form"):
@@ -137,17 +154,17 @@ with col2:
             st.warning("Naziv teme je obavezan.")
         else:
             try:
-                create_theme(client, new_theme_name, new_theme_desc)
+                create_theme(service_client, new_theme_name, new_theme_desc)
                 st.success("Tema dodata.")
-            except Exception as exc:
-                st.error(f"Neuspešno dodavanje teme: {exc}")
+            except AppError as exc:
+                st.error(str(exc))
 
 st.markdown("---")
 
 # 6) Assignments
 st.subheader("Dodela segmenata anotatorima")
-documents = get_documents(client)
-annotators = get_annotators(client)
+documents = get_documents(service_client)
+annotators = get_annotators(service_client)
 if not documents:
     st.info("Nema dokumenata za dodelu.")
 elif not annotators:
@@ -157,7 +174,7 @@ else:
     selected_doc_label = st.selectbox("Dokument", list(doc_option_map.keys()))
     selected_doc = doc_option_map[selected_doc_label]
 
-    segments = get_segments_by_document(client, selected_doc["id"])
+    segments = get_segments_by_document(service_client, selected_doc["id"])
     segments_df = pd.DataFrame(segments)
     if not segments_df.empty:
         st.dataframe(segments_df[["id", "segment_order", "segment_label", "word_count"]], use_container_width=True)
@@ -178,17 +195,17 @@ else:
 
     if st.button("Dodeli segmente"):
         try:
-            created = create_assignments(client, selected_segment_ids, selected_annotator["id"], user["id"])
+            created = create_assignments(service_client, selected_segment_ids, selected_annotator["id"], user["id"])
             st.success(f"Kreirano {len(created)} novih dodela.")
-        except Exception as exc:
-            st.error(f"Greška pri dodeli: {exc}")
+        except AppError as exc:
+            st.error(str(exc))
 
 st.markdown("---")
 
 # 7) Progress
 st.subheader("Praćenje progresa")
-admin_assignments = get_assignments_for_admin(client)
-annotation_counts = get_annotation_counts_by_segment(client)
+admin_assignments = get_assignments_for_admin(service_client)
+annotation_counts = get_annotation_counts_by_segment(service_client)
 progress_rows = []
 for row in admin_assignments:
     segment = row.get("segments") or {}
@@ -213,7 +230,7 @@ st.markdown("---")
 st.subheader("Izvoz anotiranih podataka")
 if st.button("Generiši ZIP export"):
     try:
-        export_df = build_export_dataframe(client)
+        export_df = build_export_dataframe(service_client)
         zip_bytes = build_export_zip(export_df)
         st.download_button(
             label="Preuzmi export.zip",
@@ -222,5 +239,6 @@ if st.button("Generiši ZIP export"):
             mime="application/zip",
         )
         st.success("ZIP je spreman za preuzimanje.")
-    except Exception as exc:
-        st.error(f"Greška pri izvozu: {exc}")
+        log_event(logger, "info", "admin_export_generated", user_id=user.get("id"), row_count=len(export_df))
+    except AppError as exc:
+        st.error(str(exc))

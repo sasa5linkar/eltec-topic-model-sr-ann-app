@@ -77,11 +77,11 @@ streamlit run app/streamlit_app.py
 
 ## Development user režim
 
-MVP koristi jednostavan development auth sloj:
+MVP sada podržava dva režima autentikacije (sidebar `Auth mode`):
 
-- korisnik se bira u sidebar-u iz `profiles` tabele
-- opcionalno može query param `?user_id=<uuid>`
-- arhitektura je pripremljena za kasniji prelazak na pravi Supabase auth/session flow
+- **Real auth** (preporučeno): Supabase email/password session preko ANON klijenta i RLS pravila
+- **Development**: ručni izbor korisnika iz `profiles` tabele (za lokalni development)
+- opcionalno može query param `?user_id=<uuid>` u development režimu
 
 ## Glavni moduli
 
@@ -123,3 +123,17 @@ export/
 - Dodati pravi Supabase auth/session tok (umesto dev selector-a) kada bude potrebno.
 - Dodati finije validacije i granularniji handling specifičnih razlika u šemi.
 - Po potrebi dodati migrations/seed helper skripte za test okruženje.
+
+
+## Testiranje
+
+```bash
+pytest -q
+python -m compileall app src
+```
+
+## Security / RLS napomena
+
+- Annotator read/write tok koristi ANON klijent i očekuje RLS policy pravila na Supabase tabelama.
+- Admin tok koristi service role za administrativne operacije.
+- Nemojte commit-ovati `.streamlit/secrets.toml`.

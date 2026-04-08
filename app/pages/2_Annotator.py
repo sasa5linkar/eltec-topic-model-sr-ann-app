@@ -19,15 +19,23 @@ from src.db import (
     mark_assignment_completed,
     save_annotations_for_segment,
 )
+from src.errors import AppError
+from src.logging_utils import get_logger, log_event
 from src.models import ROLE_ANNOTATOR
+
+logger = get_logger("eltec_annotator")
 
 st.set_page_config(page_title="Annotator", layout="wide")
 st.title("Annotator panel")
 
 try:
-    client = get_client(use_service_role=True)
-    user = get_current_user(client)
-except Exception as exc:
+    anon_client = get_client(use_service_role=False)
+    service_client = get_client(use_service_role=True)
+    user = get_current_user(anon_client, service_client)
+except AppError as exc:
+    st.error(str(exc))
+    st.stop()
+except Exception as exc:  # noqa: BLE001
     st.error(f"Greška pri povezivanju: {exc}")
     st.stop()
 
@@ -35,7 +43,7 @@ if user.get("role") != ROLE_ANNOTATOR:
     st.warning("Ova stranica je dostupna samo annotator korisnicima.")
     st.stop()
 
-assignments = get_assignments_for_annotator(client, user["id"])
+assignments = get_assignments_for_annotator(anon_client, user["id"])
 if not assignments:
     st.info("Nemate dodeljenih segmenata.")
     st.stop()
@@ -83,10 +91,10 @@ st.text_area(
     label_visibility="collapsed",
 )
 
-themes = get_themes(client)
+themes = get_themes(anon_client)
 theme_options = {f"{t.get('name')} ({t.get('id')})": t.get("id") for t in themes}
 
-existing = get_annotations_for_segment_and_user(client, selected_segment["id"], user["id"])
+existing = get_annotations_for_segment_and_user(anon_client, selected_segment["id"], user["id"])
 preselected_theme_ids = [a["theme_id"] for a in existing]
 default_note = existing[0].get("note", "") if existing else ""
 
@@ -103,20 +111,28 @@ with save_col:
         try:
             selected_theme_ids = [theme_options[label] for label in selected_theme_labels]
             save_annotations_for_segment(
-                client,
+                anon_client,
                 segment_id=selected_segment["id"],
                 annotator_id=user["id"],
                 theme_ids=selected_theme_ids,
                 note=note,
             )
             st.success("Anotacija je sačuvana.")
-        except Exception as exc:
-            st.error(f"Greška pri čuvanju anotacije: {exc}")
+            log_event(
+                logger,
+                "info",
+                "annotator_saved_annotation",
+                user_id=user.get("id"),
+                segment_id=selected_segment.get("id"),
+                theme_count=len(selected_theme_ids),
+            )
+        except AppError as exc:
+            st.error(str(exc))
 
 with complete_col:
     if st.button("Označi zadatak kao završen"):
         try:
-            mark_assignment_completed(client, selected_task["id"])
+            mark_assignment_completed(anon_client, selected_task["id"])
             st.success("Zadatak označen kao završen. Osvežite stranicu.")
-        except Exception as exc:
-            st.error(f"Greška pri završavanju zadatka: {exc}")
+        except AppError as exc:
+            st.error(str(exc))

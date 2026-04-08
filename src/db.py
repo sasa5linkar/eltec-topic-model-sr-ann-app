@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
 import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 
+from src.assignment_merge import index_by_id as _index_by_id, merge_assignment_rows
+from src.errors import map_supabase_error
 from src.models import STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
+
+T = TypeVar("T")
+
+
+def _safe(operation: str, action: Callable[[], T]) -> T:
+    try:
+        return action()
+    except Exception as exc:  # noqa: BLE001
+        raise map_supabase_error(exc, operation) from exc
 
 
 @st.cache_resource
@@ -24,15 +35,15 @@ def get_client(use_service_role: bool = False) -> Client:
             f"Missing Supabase secrets. Expected SUPABASE_URL and {key_name} in .streamlit/secrets.toml"
         )
 
-    return create_client(url, key)
+    return _safe("create_client", lambda: create_client(url, key))
 
 
 def _execute_select(client: Client, table: str, select_expr: str = "*") -> list[dict[str, Any]]:
-    return client.table(table).select(select_expr).execute().data or []
+    return _safe(
+        f"select {table}",
+        lambda: client.table(table).select(select_expr).execute().data or [],
+    )
 
-
-def _index_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {row["id"]: row for row in rows if row.get("id") is not None}
 
 
 def get_profiles(client: Client) -> list[dict[str, Any]]:
@@ -40,19 +51,25 @@ def get_profiles(client: Client) -> list[dict[str, Any]]:
 
 
 def get_annotators(client: Client) -> list[dict[str, Any]]:
-    return (
-        client.table(TABLES.profiles)
-        .select("*")
-        .eq("role", "annotator")
-        .order("email")
-        .execute()
-        .data
-        or []
+    return _safe(
+        "get_annotators",
+        lambda: (
+            client.table(TABLES.profiles)
+            .select("*")
+            .eq("role", "annotator")
+            .order("email")
+            .execute()
+            .data
+            or []
+        ),
     )
 
 
 def get_documents(client: Client) -> list[dict[str, Any]]:
-    return client.table(TABLES.documents).select("*").order("created_at", desc=True).execute().data or []
+    return _safe(
+        "get_documents",
+        lambda: client.table(TABLES.documents).select("*").order("created_at", desc=True).execute().data or [],
+    )
 
 
 def create_document(
@@ -70,34 +87,40 @@ def create_document(
         "source_file_name": source_file_name,
         "created_by": created_by,
     }
-    return client.table(TABLES.documents).insert(payload).execute().data[0]
+    return _safe("create_document", lambda: client.table(TABLES.documents).insert(payload).execute().data[0])
 
 
 def create_segments(client: Client, segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     payload = list(segments)
     if not payload:
         return []
-    return client.table(TABLES.segments).insert(payload).execute().data or []
+    return _safe("create_segments", lambda: client.table(TABLES.segments).insert(payload).execute().data or [])
 
 
 def get_segments_by_document(client: Client, document_id: str) -> list[dict[str, Any]]:
-    return (
-        client.table(TABLES.segments)
-        .select("*")
-        .eq("document_id", document_id)
-        .order("segment_order")
-        .execute()
-        .data
-        or []
+    return _safe(
+        "get_segments_by_document",
+        lambda: (
+            client.table(TABLES.segments)
+            .select("*")
+            .eq("document_id", document_id)
+            .order("segment_order")
+            .execute()
+            .data
+            or []
+        ),
     )
 
 
 def get_themes(client: Client) -> list[dict[str, Any]]:
-    return client.table(TABLES.themes).select("*").order("name").execute().data or []
+    return _safe("get_themes", lambda: client.table(TABLES.themes).select("*").order("name").execute().data or [])
 
 
 def create_theme(client: Client, name: str, description: str) -> dict[str, Any]:
-    return client.table(TABLES.themes).insert({"name": name.strip(), "description": description.strip()}).execute().data[0]
+    return _safe(
+        "create_theme",
+        lambda: client.table(TABLES.themes).insert({"name": name.strip(), "description": description.strip()}).execute().data[0],
+    )
 
 
 def create_assignments(
@@ -109,14 +132,17 @@ def create_assignments(
     if not segment_ids:
         return []
 
-    existing = (
-        client.table(TABLES.assignments)
-        .select("segment_id")
-        .eq("annotator_id", annotator_id)
-        .in_("segment_id", segment_ids)
-        .execute()
-        .data
-        or []
+    existing = _safe(
+        "create_assignments.fetch_existing",
+        lambda: (
+            client.table(TABLES.assignments)
+            .select("segment_id")
+            .eq("annotator_id", annotator_id)
+            .in_("segment_id", segment_ids)
+            .execute()
+            .data
+            or []
+        ),
     )
     existing_segment_ids = {row["segment_id"] for row in existing}
     new_segment_ids = [seg_id for seg_id in segment_ids if seg_id not in existing_segment_ids]
@@ -133,15 +159,26 @@ def create_assignments(
     if not payload:
         return []
 
-    return client.table(TABLES.assignments).insert(payload).execute().data or []
+    return _safe("create_assignments.insert", lambda: client.table(TABLES.assignments).insert(payload).execute().data or [])
+
 
 
 def _get_assignment_enriched_rows(client: Client, annotator_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Fetch assignments and enrich rows without relying on FK relation names."""
-    query = client.table(TABLES.assignments).select("*")
-    if annotator_id:
-        query = query.eq("annotator_id", annotator_id)
-    assignments = query.order("assigned_at", desc=False).execute().data or []
+    assignments = _safe(
+        "get_assignments.base",
+        lambda: (
+            client.table(TABLES.assignments)
+            .select("*")
+            .eq("annotator_id", annotator_id)
+            .order("assigned_at", desc=False)
+            .execute()
+            .data
+            if annotator_id
+            else client.table(TABLES.assignments).select("*").order("assigned_at", desc=False).execute().data
+        )
+        or [],
+    )
 
     if not assignments:
         return []
@@ -149,34 +186,24 @@ def _get_assignment_enriched_rows(client: Client, annotator_id: Optional[str] = 
     segment_ids = sorted({row["segment_id"] for row in assignments if row.get("segment_id")})
     annotator_ids = sorted({row["annotator_id"] for row in assignments if row.get("annotator_id")})
 
-    segments = client.table(TABLES.segments).select("*").in_("id", segment_ids).execute().data or []
-    segments_by_id = _index_by_id(segments)
-
+    segments = _safe(
+        "get_assignments.segments",
+        lambda: client.table(TABLES.segments).select("*").in_("id", segment_ids).execute().data or [],
+    )
     document_ids = sorted({row["document_id"] for row in segments if row.get("document_id")})
-    documents = client.table(TABLES.documents).select("*").in_("id", document_ids).execute().data or []
-    documents_by_id = _index_by_id(documents)
+    documents = _safe(
+        "get_assignments.documents",
+        lambda: client.table(TABLES.documents).select("*").in_("id", document_ids).execute().data or [],
+    )
+    profiles = _safe(
+        "get_assignments.profiles",
+        lambda: client.table(TABLES.profiles).select("*").in_("id", annotator_ids).execute().data or [],
+    )
 
-    profiles = client.table(TABLES.profiles).select("*").in_("id", annotator_ids).execute().data or []
-    profiles_by_id = _index_by_id(profiles)
-
-    enriched: list[dict[str, Any]] = []
-    for row in assignments:
-        seg = segments_by_id.get(row.get("segment_id"), {})
-        doc = documents_by_id.get(seg.get("document_id"), {}) if seg else {}
-        profile = profiles_by_id.get(row.get("annotator_id"), {})
-        enriched.append(
-            {
-                **row,
-                "segments": {**seg, "documents": doc},
-                "profiles": profile,
-            }
-        )
-
-    return enriched
+    return merge_assignment_rows(assignments, segments, documents, profiles)
 
 
 def get_assignments_for_admin(client: Client) -> list[dict[str, Any]]:
-    """Return assignment rows enriched with segment/document/profile info."""
     rows = _get_assignment_enriched_rows(client)
     return sorted(rows, key=lambda r: r.get("assigned_at") or "", reverse=True)
 
@@ -186,14 +213,17 @@ def get_assignments_for_annotator(client: Client, user_id: str) -> list[dict[str
 
 
 def get_annotations_for_segment_and_user(client: Client, segment_id: str, annotator_id: str) -> list[dict[str, Any]]:
-    return (
-        client.table(TABLES.annotations)
-        .select("*")
-        .eq("segment_id", segment_id)
-        .eq("annotator_id", annotator_id)
-        .execute()
-        .data
-        or []
+    return _safe(
+        "get_annotations_for_segment_and_user",
+        lambda: (
+            client.table(TABLES.annotations)
+            .select("*")
+            .eq("segment_id", segment_id)
+            .eq("annotator_id", annotator_id)
+            .execute()
+            .data
+            or []
+        ),
     )
 
 
@@ -205,8 +235,10 @@ def save_annotations_for_segment(
     theme_ids: list[str],
     note: str,
 ) -> list[dict[str, Any]]:
-    """Replace prior annotations for (segment, annotator) with selected themes."""
-    client.table(TABLES.annotations).delete().eq("segment_id", segment_id).eq("annotator_id", annotator_id).execute()
+    _safe(
+        "save_annotations_for_segment.delete_previous",
+        lambda: client.table(TABLES.annotations).delete().eq("segment_id", segment_id).eq("annotator_id", annotator_id).execute(),
+    )
 
     if not theme_ids:
         return []
@@ -221,30 +253,34 @@ def save_annotations_for_segment(
         }
         for theme_id in theme_ids
     ]
-    return client.table(TABLES.annotations).insert(payload).execute().data or []
+    return _safe("save_annotations_for_segment.insert", lambda: client.table(TABLES.annotations).insert(payload).execute().data or [])
 
 
 def mark_assignment_completed(client: Client, assignment_id: str) -> dict[str, Any]:
-    return (
-        client.table(TABLES.assignments)
-        .update({"status": STATUS_COMPLETED, "completed_at": datetime.now(timezone.utc).isoformat()})
-        .eq("id", assignment_id)
-        .execute()
-        .data[0]
+    return _safe(
+        "mark_assignment_completed",
+        lambda: (
+            client.table(TABLES.assignments)
+            .update({"status": STATUS_COMPLETED, "completed_at": datetime.now(timezone.utc).isoformat()})
+            .eq("id", assignment_id)
+            .execute()
+            .data[0]
+        ),
     )
 
 
-
 def get_annotation_counts_by_segment(client: Client) -> dict[str, int]:
-    """Return annotation counts indexed by segment_id."""
-    rows = client.table(TABLES.annotations).select("segment_id").execute().data or []
+    rows = _safe(
+        "get_annotation_counts_by_segment",
+        lambda: client.table(TABLES.annotations).select("segment_id").execute().data or [],
+    )
     counts: dict[str, int] = {}
     for row in rows:
         segment_id = row.get("segment_id")
-        if not segment_id:
-            continue
-        counts[segment_id] = counts.get(segment_id, 0) + 1
+        if segment_id:
+            counts[segment_id] = counts.get(segment_id, 0) + 1
     return counts
+
 
 def get_dashboard_counts(client: Client) -> dict[str, int]:
     return {
@@ -252,16 +288,21 @@ def get_dashboard_counts(client: Client) -> dict[str, int]:
         "segments": len(_execute_select(client, TABLES.segments, "id")),
         "assignments": len(_execute_select(client, TABLES.assignments, "id")),
         "completed_assignments": len(
-            client.table(TABLES.assignments).select("id").eq("status", STATUS_COMPLETED).execute().data or []
+            _safe(
+                "get_dashboard_counts.completed",
+                lambda: client.table(TABLES.assignments).select("id").eq("status", STATUS_COMPLETED).execute().data or [],
+            )
         ),
         "annotations": len(_execute_select(client, TABLES.annotations, "id")),
     }
 
 
 def build_export_dataframe(client: Client) -> pd.DataFrame:
-    """Build export dataframe with one row per assignment/segment combination."""
     assignments = _get_assignment_enriched_rows(client)
-    annotations = client.table(TABLES.annotations).select("segment_id,annotator_id,theme_id,note").execute().data or []
+    annotations = _safe(
+        "build_export_dataframe.annotations",
+        lambda: client.table(TABLES.annotations).select("segment_id,annotator_id,theme_id,note").execute().data or [],
+    )
     themes = get_themes(client)
     themes_by_id = _index_by_id(themes)
 

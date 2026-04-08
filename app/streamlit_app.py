@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from src.auth import get_current_user
 from src.db import get_client
+from src.errors import AppError
 from src.models import ROLE_ADMIN, ROLE_ANNOTATOR
 
 st.set_page_config(page_title="ELTeC Topic Annotation", layout="wide")
@@ -21,9 +22,13 @@ st.title("ELTeC Topic Annotation MVP")
 st.caption("Jedna Streamlit aplikacija za admin i annotator role.")
 
 try:
-    client = get_client(use_service_role=True)
-    user = get_current_user(client)
-except Exception as exc:
+    anon_client = get_client(use_service_role=False)
+    service_client = get_client(use_service_role=True)
+    user = get_current_user(anon_client, service_client)
+except AppError as exc:
+    st.error(str(exc))
+    st.stop()
+except Exception as exc:  # noqa: BLE001
     st.error(f"Greška pri inicijalizaciji aplikacije: {exc}")
     st.stop()
 
