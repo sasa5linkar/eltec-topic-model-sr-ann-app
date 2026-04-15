@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
-from src.models import ParsedDocument
+from collections.abc import Iterable
+from typing import Any
+
+from src.models import ParsedDocument, ParsedPage, ParsedSection
 
 
 def _word_count(text: str) -> int:
     return len(text.split())
 
 
-def segment_by_chapters(parsed: ParsedDocument) -> list[dict]:
-    """Create segments from parsed chapter-like sections."""
-    segments: list[dict] = []
-    for idx, section in enumerate(parsed.sections, start=1):
-        text = section.text.strip()
+def _build_labeled_segments(
+    items: Iterable[ParsedSection | ParsedPage],
+    *,
+    fallback_prefix: str,
+) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for idx, item in enumerate(items, start=1):
+        text = item.text.strip()
         if not text:
             continue
         segments.append(
             {
                 "segment_order": idx,
-                "segment_label": section.label or f"Chapter {idx}",
+                "segment_label": item.label or f"{fallback_prefix} {idx}",
                 "text_content": text,
                 "word_count": _word_count(text),
             }
@@ -27,7 +33,17 @@ def segment_by_chapters(parsed: ParsedDocument) -> list[dict]:
     return segments
 
 
-def segment_by_word_count(full_text: str, chunk_size: int = 1200) -> list[dict]:
+def segment_by_chapters(parsed: ParsedDocument) -> list[dict[str, Any]]:
+    """Create segments from parsed chapter-like sections."""
+    return _build_labeled_segments(parsed.sections, fallback_prefix="Chapter")
+
+
+def segment_by_pages(parsed: ParsedDocument) -> list[dict[str, Any]]:
+    """Create segments from parsed TEI page break markers."""
+    return _build_labeled_segments(parsed.pages, fallback_prefix="Page")
+
+
+def segment_by_word_count(full_text: str, chunk_size: int = 1200) -> list[dict[str, Any]]:
     """Fallback segmentation by fixed number of words."""
     words = full_text.split()
     if not words:

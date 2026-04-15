@@ -37,6 +37,14 @@ class ParsedSection:
 
 
 @dataclass
+class ParsedPage:
+    """One parsed page extracted from TEI page break markers."""
+
+    label: str
+    text: str
+
+
+@dataclass
 class ParsedDocument:
     """Result object returned by ELTeC parser."""
 
@@ -45,3 +53,4 @@ class ParsedDocument:
     publication_year: Optional[int]
     full_text: str
     sections: list[ParsedSection]
+    pages: list[ParsedPage]

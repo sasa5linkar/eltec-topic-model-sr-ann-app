@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional, TypeVar
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -11,7 +13,7 @@ from supabase import Client, create_client
 
 from src.assignment_merge import index_by_id as _index_by_id, merge_assignment_rows
 from src.errors import map_supabase_error
-from src.models import STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
+from src.models import ROLE_ANNOTATOR, STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
 
 T = TypeVar("T")
 
@@ -21,6 +23,20 @@ def _safe(operation: str, action: Callable[[], T]) -> T:
         return action()
     except Exception as exc:  # noqa: BLE001
         raise map_supabase_error(exc, operation) from exc
+
+
+def _bypass_proxy_for_host(url: str) -> None:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        return
+
+    for env_name in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(env_name, "")
+        entries = [entry.strip() for entry in current.split(",") if entry.strip()]
+        if host not in entries:
+            entries.append(host)
+            os.environ[env_name] = ",".join(entries)
 
 
 @st.cache_resource
@@ -35,6 +51,7 @@ def get_client(use_service_role: bool = False) -> Client:
             f"Missing Supabase secrets. Expected SUPABASE_URL and {key_name} in .streamlit/secrets.toml"
         )
 
+    _bypass_proxy_for_host(url)
     return _safe("create_client", lambda: create_client(url, key))
 
 
@@ -121,6 +138,53 @@ def create_theme(client: Client, name: str, description: str) -> dict[str, Any]:
         "create_theme",
         lambda: client.table(TABLES.themes).insert({"name": name.strip(), "description": description.strip()}).execute().data[0],
     )
+
+
+def create_annotator_account(
+    client: Client,
+    *,
+    email: str,
+    password: str,
+    full_name: str,
+) -> dict[str, Any]:
+    cleaned_email = email.strip().lower()
+    cleaned_name = full_name.strip() or None
+
+    auth_user = _safe(
+        "create_annotator_account.auth.create_user",
+        lambda: client.auth.admin.create_user(
+            {
+                "email": cleaned_email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": {"full_name": cleaned_name} if cleaned_name else {},
+            }
+        ).user,
+    )
+
+    try:
+        profile = _safe(
+            "create_annotator_account.profiles.insert",
+            lambda: client.table(TABLES.profiles)
+            .insert(
+                {
+                    "id": auth_user.id,
+                    "email": cleaned_email,
+                    "full_name": cleaned_name,
+                    "role": ROLE_ANNOTATOR,
+                }
+            )
+            .execute()
+            .data[0],
+        )
+    except Exception:
+        _safe(
+            "create_annotator_account.auth.rollback_delete_user",
+            lambda: client.auth.admin.delete_user(auth_user.id),
+        )
+        raise
+
+    return profile
 
 
 def create_assignments(

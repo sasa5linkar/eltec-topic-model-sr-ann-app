@@ -1,4 +1,4 @@
-"""Main entry point for ELTeC annotation Streamlit app."""
+﻿"""Main entry point for the ELTeC annotation Streamlit app."""
 
 from __future__ import annotations
 
@@ -18,35 +18,40 @@ from src.models import ROLE_ADMIN, ROLE_ANNOTATOR
 
 st.set_page_config(page_title="ELTeC Topic Annotation", layout="wide")
 
-st.title("ELTeC Topic Annotation MVP")
-st.caption("Jedna Streamlit aplikacija za admin i annotator role.")
 
-try:
-    anon_client = get_client(use_service_role=False)
-    service_client = get_client(use_service_role=True)
-    user = get_current_user(anon_client, service_client)
-except AppError as exc:
-    st.error(str(exc))
-    st.stop()
-except Exception as exc:  # noqa: BLE001
-    st.error(f"Greška pri inicijalizaciji aplikacije: {exc}")
-    st.stop()
+def main() -> None:
+    st.title("ELTeC Topic Annotation MVP")
+    st.caption("One Streamlit app for both admin and annotator workflows.")
 
-st.sidebar.markdown("---")
-st.sidebar.write(f"**Aktivni korisnik:** {user.get('email', 'N/A')}")
-st.sidebar.write(f"**Rola:** {user.get('role', 'N/A')}")
+    try:
+        anon_client = get_client(use_service_role=False)
+        service_client = get_client(use_service_role=True)
+        user = get_current_user(anon_client, service_client)
+    except AppError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Greska pri inicijalizaciji aplikacije: {exc}")
+        return
 
-if user.get("role") == ROLE_ADMIN:
-    st.success("Prijavljeni ste kao admin. Otvorite stranicu **Admin** iz levog menija.")
-elif user.get("role") == ROLE_ANNOTATOR:
-    st.success("Prijavljeni ste kao annotator. Otvorite stranicu **Annotator** iz levog menija.")
-else:
-    st.warning("Korisnik nema podržanu rolu. Očekivane role: admin ili annotator.")
+    st.sidebar.markdown("---")
+    st.sidebar.write(f"**Aktivni korisnik:** {user.get('email', 'N/A')}")
+    st.sidebar.write(f"**Rola:** {user.get('role', 'N/A')}")
 
-st.markdown(
-    """
+    if user.get("role") == ROLE_ADMIN:
+        st.success("Prijavljeni ste kao admin. Otvorite stranicu Admin iz levog menija.")
+    elif user.get("role") == ROLE_ANNOTATOR:
+        st.success("Prijavljeni ste kao annotator. Otvorite stranicu Annotator iz levog menija.")
+    else:
+        st.warning("Korisnik nema podrzanu rolu. Ocekivane role su admin ili annotator.")
+
+    st.markdown(
+        """
 ### Navigacija
 - **Admin**: upload XML, segmentacija, teme, dodele, progres, export
-- **Annotator**: lični zadaci, anotiranje tema, završavanje dodela
+- **Annotator**: licni zadaci, anotiranje tema, zavrsavanje dodela
 """
-)
+    )
+
+
+main()

@@ -9,6 +9,8 @@ venv/
 
 # Streamlit
 .streamlit/secrets.toml
+.streamlit-start.log
+.streamlit-start.err.log
 
 # IDE / OS
 .idea/
@@ -19,3 +21,4 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tmp/
