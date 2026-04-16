@@ -12,7 +12,7 @@ from supabase import Client
 from src.db import get_profiles
 from src.errors import AuthenticationError, map_supabase_error
 from src.logging_utils import get_logger, log_event
-from src.models import TABLES
+from src.models import ROLE_ADMIN, ROLE_ANNOTATOR, TABLES
 
 AUTH_CALLBACK_KEYS = (
     "code",
@@ -31,6 +31,7 @@ AUTH_CALLBACK_KEYS = (
 )
 LOGGER = get_logger("eltec_app.auth")
 EMAIL_ACTION_COOLDOWN_SECONDS = 60
+SUPPORTED_PROFILE_ROLES = {ROLE_ADMIN, ROLE_ANNOTATOR}
 
 
 @st.cache_data(ttl=60)
@@ -109,9 +110,116 @@ def _resolve_query_param_user(users: list[dict[str, Any]]) -> dict[str, Any] | N
     return next((user for user in users if user.get("id") == user_id), None)
 
 
+def _try_find_profile_by_id(client: Client, user_id: str) -> tuple[dict[str, Any] | None, Exception | None]:
+    try:
+        rows = client.table(TABLES.profiles).select("*").eq("id", user_id).limit(1).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        return None, exc
+    return (rows[0] if rows else None), None
+
+
 def _find_profile_by_id(client: Client, user_id: str) -> dict[str, Any] | None:
-    rows = client.table(TABLES.profiles).select("*").eq("id", user_id).limit(1).execute().data or []
-    return rows[0] if rows else None
+    profile, error = _try_find_profile_by_id(client, user_id)
+    if error:
+        raise error
+    return profile
+
+
+def _normalize_role(value: Any) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip().lower()
+    return cleaned if cleaned in SUPPORTED_PROFILE_ROLES else None
+
+
+def _build_profile_payload_from_auth_user(user: Any) -> dict[str, Any] | None:
+    user_id = getattr(user, "id", None)
+    raw_email = getattr(user, "email", None)
+    if not user_id or not raw_email:
+        return None
+
+    user_metadata = getattr(user, "user_metadata", {}) or {}
+    app_metadata = getattr(user, "app_metadata", {}) or {}
+    role = _normalize_role(user_metadata.get("role") or app_metadata.get("role"))
+    if not role:
+        return None
+
+    raw_full_name = (
+        user_metadata.get("full_name")
+        or user_metadata.get("name")
+        or app_metadata.get("full_name")
+        or app_metadata.get("name")
+    )
+    cleaned_full_name = raw_full_name.strip() if isinstance(raw_full_name, str) and raw_full_name.strip() else None
+
+    return {
+        "id": user_id,
+        "email": str(raw_email).strip().lower(),
+        "full_name": cleaned_full_name,
+        "role": role,
+    }
+
+
+def _create_profile_from_auth_user(client_service: Client, user: Any) -> dict[str, Any] | None:
+    payload = _build_profile_payload_from_auth_user(user)
+    if not payload:
+        return None
+
+    try:
+        rows = client_service.table(TABLES.profiles).insert(payload).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        raise AuthenticationError(str(map_supabase_error(exc, "profiles.insert_missing_profile"))) from exc
+
+    profile = rows[0] if rows else payload
+    log_event(
+        LOGGER,
+        "info",
+        "profile_created_from_auth_metadata",
+        user_id=payload["id"],
+        email=payload["email"],
+        role=payload["role"],
+    )
+    return profile
+
+
+def _resolve_profile_for_authenticated_user(
+    client_anon: Client,
+    client_service: Client | None,
+    user: Any,
+) -> dict[str, Any]:
+    profile, anon_error = _try_find_profile_by_id(client_anon, user.id)
+    if profile:
+        return profile
+
+    if anon_error:
+        mapped = map_supabase_error(anon_error, "profiles.select_current_user")
+        if mapped.status_code == 403 or "rls/policy" in mapped.message.lower():
+            log_event(
+                LOGGER,
+                "warning",
+                "profile_lookup_requires_service_role",
+                user_id=user.id,
+                email=getattr(user, "email", None),
+            )
+        else:
+            raise AuthenticationError(str(mapped)) from anon_error
+
+    if client_service is not None:
+        service_profile, service_error = _try_find_profile_by_id(client_service, user.id)
+        if service_error:
+            raise AuthenticationError(str(map_supabase_error(service_error, "profiles.select_current_user_service"))) from service_error
+        if service_profile:
+            return service_profile
+
+        created_profile = _create_profile_from_auth_user(client_service, user)
+        if created_profile:
+            return created_profile
+
+    email = str(getattr(user, "email", "") or "").strip().lower() or "unknown"
+    raise AuthenticationError(
+        "Korisnik postoji u auth-u, ali nema profil u tabeli profiles. "
+        f"Dodajte red sa id='{user.id}', email='{email}' i rolom 'admin' ili 'annotator'."
+    )
 
 
 def _sync_client_session(client_anon: Client) -> Any:
@@ -285,7 +393,7 @@ def _render_login_form(client_anon: Client) -> None:
         st.caption(f"Auth redirect URL: {_get_redirect_url()}")
 
 
-def _get_current_user_real_auth(client_anon: Client) -> dict[str, Any]:
+def _get_current_user_real_auth(client_anon: Client, client_service: Client | None = None) -> dict[str, Any]:
     """Resolve user from a real Supabase auth session in anon/RLS mode."""
     _render_hash_callback_bridge()
     _handle_auth_callback(client_anon)
@@ -303,9 +411,7 @@ def _get_current_user_real_auth(client_anon: Client) -> dict[str, Any]:
     if not user or not user.id:
         raise AuthenticationError("Nije moguce ucitati autentifikovanog korisnika.")
 
-    profile = _find_profile_by_id(client_anon, user.id)
-    if not profile:
-        raise AuthenticationError("Korisnik postoji u auth-u, ali nema profil u tabeli profiles.")
+    profile = _resolve_profile_for_authenticated_user(client_anon, client_service, user)
 
     if st.sidebar.button("Sign out"):
         client_anon.auth.sign_out()
@@ -341,7 +447,7 @@ def get_current_user(client_anon: Client, client_service: Client | None = None) 
     """Return the active user profile for either auth mode."""
     mode = st.sidebar.radio("Auth mode", ["Real auth", "Development"], index=0)
     if mode == "Real auth":
-        return _get_current_user_real_auth(client_anon)
+        return _get_current_user_real_auth(client_anon, client_service)
 
     if client_service is None:
         raise AuthenticationError("Development mode zahteva service-role klijent.")

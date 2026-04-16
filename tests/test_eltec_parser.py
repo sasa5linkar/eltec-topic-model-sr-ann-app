@@ -29,6 +29,7 @@ def test_parse_tei_with_header_and_divs() -> None:
     assert parsed.publication_year == 1888
     assert len(parsed.sections) == 2
     assert parsed.pages == []
+    assert len(parsed.paragraphs) == 2
 
 
 def test_parse_tei_without_header_fallbacks() -> None:
@@ -42,7 +43,26 @@ def test_parse_tei_without_header_fallbacks() -> None:
     assert parsed.author == "Unknown"
     assert parsed.sections == []
     assert parsed.pages == []
+    assert len(parsed.paragraphs) == 1
     assert "Samo tekst" in parsed.full_text
+
+
+def test_parse_tei_preserves_paragraph_breaks_in_section_text() -> None:
+    xml = b"""
+    <TEI xmlns=\"http://www.tei-c.org/ns/1.0\">
+      <text><body>
+        <div>
+          <head>Prvo</head>
+          <p>Jedan dva tri.</p>
+          <p>Cetiri pet sest.</p>
+        </div>
+      </body></text>
+    </TEI>
+    """
+    parsed = parse_eltec_tei_xml(xml)
+    assert len(parsed.sections) == 1
+    assert parsed.sections[0].text == "Jedan dva tri.\n\nCetiri pet sest."
+    assert parsed.full_text == "Jedan dva tri.\n\nCetiri pet sest."
 
 
 def test_parse_real_example_extracts_sections_and_pages() -> None:
@@ -52,6 +72,8 @@ def test_parse_real_example_extracts_sections_and_pages() -> None:
     assert parsed.publication_year == 1867
     assert len(parsed.sections) == 13
     assert len(parsed.pages) == 35
+    assert len(parsed.paragraphs) > 0
     assert parsed.pages[0].label == "20.474"
     assert parsed.pages[-1].label == "28.669"
     assert parsed.pages[0].text
+    assert parsed.paragraphs[0].text

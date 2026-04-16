@@ -45,6 +45,14 @@ class ParsedPage:
 
 
 @dataclass
+class ParsedParagraph:
+    """One parsed paragraph extracted from TEI paragraph tags."""
+
+    label: str
+    text: str
+
+
+@dataclass
 class ParsedDocument:
     """Result object returned by ELTeC parser."""
 
@@ -54,3 +62,4 @@ class ParsedDocument:
     full_text: str
     sections: list[ParsedSection]
     pages: list[ParsedPage]
+    paragraphs: list[ParsedParagraph]

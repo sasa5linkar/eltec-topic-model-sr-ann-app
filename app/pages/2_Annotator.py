@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import html
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,37 @@ def _task_label(task: dict[str, Any]) -> str:
     return f"{document.get('title')} / #{segment.get('segment_order')} / {task.get('status')}"
 
 
+def _split_text_into_paragraphs(text: str) -> list[str]:
+    normalized = (text or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return []
+
+    paragraphs = [chunk.strip() for chunk in re.split(r"\n\s*\n+", normalized) if chunk.strip()]
+    return paragraphs or [normalized]
+
+
+def _render_segment_text(text: str) -> None:
+    paragraphs = _split_text_into_paragraphs(text)
+    if not paragraphs:
+        st.info("No text available for this segment.")
+        return
+
+    reader_html = "".join(
+        f"<p style='margin: 0 0 1rem 0;'>{html.escape(paragraph)}</p>"
+        for paragraph in paragraphs
+    )
+    st.caption(f"Paragraphs shown: {len(paragraphs)}")
+    st.markdown(
+        (
+            "<div style='max-height: 360px; overflow-y: auto; padding: 1rem; "
+            "border: 1px solid #e5e7eb; border-radius: 0.5rem; background: #fafaf9; "
+            "line-height: 1.75; font-size: 1rem;'>"
+            f"{reader_html}</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 anon_client, _, current_user = load_authenticated_page(
     page_title="Annotator",
     heading="Annotator panel",
@@ -79,13 +112,7 @@ meta_col2.write(f"**Segment:** #{selected_segment.get('segment_order')} - {selec
 meta_col2.write(f"**Status:** {selected_task.get('status')}")
 
 st.markdown("**Segment text**")
-st.text_area(
-    "segment_text",
-    value=selected_segment.get("text_content", ""),
-    height=260,
-    disabled=True,
-    label_visibility="collapsed",
-)
+_render_segment_text(selected_segment.get("text_content", ""))
 
 themes = get_themes(anon_client)
 theme_options = {f"{theme.get('name')} ({theme.get('id')})": theme.get("id") for theme in themes}
@@ -99,6 +126,7 @@ selected_theme_labels = st.multiselect(
     options=list(theme_options.keys()),
     default=[label for label, theme_id in theme_options.items() if theme_id in preselected_theme_ids],
 )
+st.caption("Saving again replaces your previous annotation for this segment, so you can correct mistakes later.")
 note = st.text_area("Note (optional)", value=default_note)
 
 save_col, complete_col = st.columns(2)

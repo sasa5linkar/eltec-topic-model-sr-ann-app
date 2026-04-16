@@ -18,6 +18,8 @@ from src.db import (
     create_document,
     create_segments,
     create_theme,
+    delete_document,
+    get_document_overview,
     get_annotation_counts_by_segment,
     get_annotators,
     get_assignments_for_admin,
@@ -32,17 +34,58 @@ from src.export_utils import build_export_zip
 from src.logging_utils import get_logger, log_event
 from src.models import ParsedDocument, ROLE_ADMIN
 from src.page_utils import load_authenticated_page
-from src.segmentation import segment_by_chapters, segment_by_pages, segment_by_word_count
+from src.segmentation import segment_by_chapters, segment_by_pages, segment_by_paragraph_count, segment_by_word_count
 
 logger = get_logger("eltec_admin")
+SEGMENT_BY_CHAPTERS = "By chapters"
+SEGMENT_BY_PAGES = "By pages"
+SEGMENT_BY_PARAGRAPHS = "By paragraph count"
+SEGMENT_BY_WORDS = "By word count"
+IMPORT_NOTICE_KEY = "admin_import_notice"
+UPLOAD_WIDGET_COUNTER_KEY = "admin_upload_widget_counter"
+DELETE_NOTICE_KEY = "admin_delete_notice"
+DELETE_CONFIRM_COUNTER_KEY = "admin_delete_confirm_counter"
 
 
-def _segment_document(parsed: ParsedDocument, mode: str, chunk_size: int, use_pages: bool) -> list[dict[str, Any]]:
-    if use_pages:
+def _available_segmentation_modes(parsed: ParsedDocument) -> list[str]:
+    modes: list[str] = []
+    if parsed.sections:
+        modes.append(SEGMENT_BY_CHAPTERS)
+    if parsed.pages:
+        modes.append(SEGMENT_BY_PAGES)
+    if parsed.paragraphs:
+        modes.append(SEGMENT_BY_PARAGRAPHS)
+    modes.append(SEGMENT_BY_WORDS)
+    return modes
+
+
+def _segment_document(parsed: ParsedDocument, mode: str, chunk_size: int | None = None) -> list[dict[str, Any]]:
+    if mode == SEGMENT_BY_PAGES:
         return segment_by_pages(parsed)
-    if mode == "By chapters" and parsed.sections:
+    if mode == SEGMENT_BY_CHAPTERS:
         return segment_by_chapters(parsed)
-    return segment_by_word_count(parsed.full_text, chunk_size)
+    if mode == SEGMENT_BY_PARAGRAPHS:
+        return segment_by_paragraph_count(parsed, chunk_size or 5)
+    return segment_by_word_count(parsed.full_text, chunk_size or 1200)
+
+
+def _next_upload_widget_key() -> str:
+    counter = int(st.session_state.get(UPLOAD_WIDGET_COUNTER_KEY, 0))
+    return f"admin_xml_upload_{counter}"
+
+
+def _next_delete_confirm_key() -> str:
+    counter = int(st.session_state.get(DELETE_CONFIRM_COUNTER_KEY, 0))
+    return f"admin_delete_document_confirm_{counter}"
+
+
+def _reset_import_state(*, notice: str | None = None) -> None:
+    st.session_state.pop("parsed_doc", None)
+    st.session_state.pop("source_filename", None)
+    st.session_state.pop("candidate_segments", None)
+    st.session_state[UPLOAD_WIDGET_COUNTER_KEY] = int(st.session_state.get(UPLOAD_WIDGET_COUNTER_KEY, 0)) + 1
+    if notice:
+        st.session_state[IMPORT_NOTICE_KEY] = notice
 
 
 def _render_dashboard(service_client: Any) -> None:
@@ -56,11 +99,106 @@ def _render_dashboard(service_client: Any) -> None:
     columns[4].metric("Annotations", counts["annotations"])
 
 
+def _render_documents_overview(service_client: Any) -> None:
+    st.markdown("---")
+    st.subheader("Documents overview")
+
+    overview_rows = get_document_overview(service_client)
+    if not overview_rows:
+        st.info("There are no uploaded documents yet.")
+        return
+
+    table = pd.DataFrame(overview_rows)
+    if table.empty:
+        st.info("There are no uploaded documents yet.")
+        return
+
+    table["assignment_coverage"] = table.apply(
+        lambda row: 0.0 if row["total_segments"] == 0 else round((row["assigned_segments"] / row["total_segments"]) * 100, 1),
+        axis=1,
+    )
+    st.dataframe(
+        table[
+            [
+                "title",
+                "author",
+                "total_segments",
+                "assigned_segments",
+                "unassigned_segments",
+                "assignment_rows",
+                "completed_assignments",
+                "assignment_coverage",
+            ]
+        ],
+        use_container_width=True,
+    )
+
+
+def _render_document_delete(service_client: Any, user: dict[str, Any]) -> None:
+    st.markdown("---")
+    st.subheader("Delete document")
+    st.caption("This permanently deletes the document together with its segments, assignments, and annotations.")
+
+    delete_notice = st.session_state.pop(DELETE_NOTICE_KEY, None)
+    if delete_notice:
+        st.success(delete_notice)
+
+    overview_rows = get_document_overview(service_client)
+    if not overview_rows:
+        st.info("There are no uploaded documents to delete.")
+        return
+
+    options = {
+        f"{row.get('title') or 'Untitled'} ({row.get('document_id')})": row
+        for row in overview_rows
+    }
+    selected_row = options[st.selectbox("Document to delete", list(options.keys()))]
+
+    metrics = st.columns(4)
+    metrics[0].metric("Segments", selected_row.get("total_segments", 0))
+    metrics[1].metric("Assigned", selected_row.get("assigned_segments", 0))
+    metrics[2].metric("Unassigned", selected_row.get("unassigned_segments", 0))
+    metrics[3].metric("Completed", selected_row.get("completed_assignments", 0))
+
+    confirm = st.checkbox(
+        "I understand this will permanently remove the document and all related work.",
+        key=_next_delete_confirm_key(),
+    )
+
+    if st.button("Delete selected document", disabled=not confirm):
+        try:
+            result = delete_document(service_client, selected_row["document_id"])
+            notice = (
+                f"Deleted document '{selected_row.get('title')}' "
+                f"with {result['segments_deleted']} segments, {result['assignments_deleted']} assignments, "
+                f"and {result['annotations_deleted']} annotations."
+            )
+            log_event(
+                logger,
+                "info",
+                "admin_document_deleted",
+                user_id=user.get("id"),
+                document_id=selected_row.get("document_id"),
+                segments_deleted=result["segments_deleted"],
+                assignments_deleted=result["assignments_deleted"],
+                annotations_deleted=result["annotations_deleted"],
+            )
+            st.session_state[DELETE_NOTICE_KEY] = notice
+            st.session_state[DELETE_CONFIRM_COUNTER_KEY] = int(st.session_state.get(DELETE_CONFIRM_COUNTER_KEY, 0)) + 1
+            st.rerun()
+        except AppError as exc:
+            st.error(str(exc))
+
+
 def _render_import_section(service_client: Any, user: dict[str, Any]) -> None:
     st.markdown("---")
     st.subheader("Upload ELTeC / TEI XML")
 
-    xml_file = st.file_uploader("Select XML file", type=["xml"])
+    import_notice = st.session_state.pop(IMPORT_NOTICE_KEY, None)
+    if import_notice:
+        st.success(import_notice)
+
+    xml_file = st.file_uploader("Select XML file", type=["xml"], key=_next_upload_widget_key())
     if xml_file is not None:
         try:
             parsed = parse_eltec_tei_xml(xml_file.getvalue())
@@ -83,18 +221,20 @@ def _render_import_section(service_client: Any, user: dict[str, Any]) -> None:
             "publication_year": parsed.publication_year,
             "sections_detected": len(parsed.sections),
             "pages_detected": len(parsed.pages),
+            "paragraphs_detected": len(parsed.paragraphs),
             "text_length_chars": len(parsed.full_text),
         }
     )
 
-    mode = st.radio("Segmentation mode", options=["By chapters", "By word count"], horizontal=True)
-    use_page_segmentation = st.checkbox("Use TEI pages for segmentation", value=False) if parsed.pages else False
-    chunk_size = 1200
-    if mode == "By word count":
+    mode = st.radio("Segmentation mode", options=_available_segmentation_modes(parsed), horizontal=True)
+    chunk_size: int | None = None
+    if mode == SEGMENT_BY_WORDS:
         chunk_size = int(st.number_input("Words per segment", min_value=200, max_value=5000, value=1200, step=100))
+    elif mode == SEGMENT_BY_PARAGRAPHS:
+        chunk_size = int(st.number_input("Paragraphs per segment", min_value=1, max_value=100, value=5, step=1))
 
     if st.button("Prepare segments", type="secondary"):
-        st.session_state["candidate_segments"] = _segment_document(parsed, mode, chunk_size, use_page_segmentation)
+        st.session_state["candidate_segments"] = _segment_document(parsed, mode, chunk_size)
 
     candidate_segments = st.session_state.get("candidate_segments", [])
     if not candidate_segments:
@@ -115,7 +255,7 @@ def _render_import_section(service_client: Any, user: dict[str, Any]) -> None:
             )
             segments_payload = [{**segment, "document_id": document["id"]} for segment in candidate_segments]
             create_segments(service_client, segments_payload)
-            st.success(f"Document saved (ID: {document['id']}) and {len(segments_payload)} segments created.")
+            notice = f"Document saved (ID: {document['id']}) and {len(segments_payload)} segments created."
             log_event(
                 logger,
                 "info",
@@ -124,6 +264,8 @@ def _render_import_section(service_client: Any, user: dict[str, Any]) -> None:
                 document_id=document.get("id"),
                 segment_count=len(segments_payload),
             )
+            _reset_import_state(notice=notice)
+            st.rerun()
         except AppError as exc:
             st.error(str(exc))
 
@@ -289,6 +431,8 @@ _, service_client, current_user = load_authenticated_page(
 )
 
 _render_dashboard(service_client)
+_render_documents_overview(service_client)
+_render_document_delete(service_client, current_user)
 _render_import_section(service_client, current_user)
 _render_annotator_creation(service_client, current_user)
 _render_themes(service_client)

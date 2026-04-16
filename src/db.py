@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 
-from src.assignment_merge import index_by_id as _index_by_id, merge_assignment_rows
+from src.assignment_merge import build_document_overview_rows, index_by_id as _index_by_id, merge_assignment_rows
 from src.errors import map_supabase_error
 from src.models import ROLE_ANNOTATOR, STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
 
@@ -89,6 +89,13 @@ def get_documents(client: Client) -> list[dict[str, Any]]:
     )
 
 
+def get_all_segments(client: Client) -> list[dict[str, Any]]:
+    return _safe(
+        "get_all_segments",
+        lambda: client.table(TABLES.segments).select("*").order("document_id").order("segment_order").execute().data or [],
+    )
+
+
 def create_document(
     client: Client,
     title: str,
@@ -112,6 +119,42 @@ def create_segments(client: Client, segments: Iterable[dict[str, Any]]) -> list[
     if not payload:
         return []
     return _safe("create_segments", lambda: client.table(TABLES.segments).insert(payload).execute().data or [])
+
+
+def delete_document(client: Client, document_id: str) -> dict[str, int]:
+    segment_rows = _safe(
+        "delete_document.fetch_segments",
+        lambda: client.table(TABLES.segments).select("id").eq("document_id", document_id).execute().data or [],
+    )
+    segment_ids = [row["id"] for row in segment_rows if row.get("id")]
+
+    deleted_annotations = []
+    deleted_assignments = []
+    if segment_ids:
+        deleted_annotations = _safe(
+            "delete_document.annotations",
+            lambda: client.table(TABLES.annotations).delete().in_("segment_id", segment_ids).execute().data or [],
+        )
+        deleted_assignments = _safe(
+            "delete_document.assignments",
+            lambda: client.table(TABLES.assignments).delete().in_("segment_id", segment_ids).execute().data or [],
+        )
+
+    deleted_segments = _safe(
+        "delete_document.segments",
+        lambda: client.table(TABLES.segments).delete().eq("document_id", document_id).execute().data or [],
+    )
+    deleted_documents = _safe(
+        "delete_document.document",
+        lambda: client.table(TABLES.documents).delete().eq("id", document_id).execute().data or [],
+    )
+
+    return {
+        "documents_deleted": len(deleted_documents),
+        "segments_deleted": len(deleted_segments),
+        "assignments_deleted": len(deleted_assignments),
+        "annotations_deleted": len(deleted_annotations),
+    }
 
 
 def get_segments_by_document(client: Client, document_id: str) -> list[dict[str, Any]]:
@@ -149,6 +192,9 @@ def create_annotator_account(
 ) -> dict[str, Any]:
     cleaned_email = email.strip().lower()
     cleaned_name = full_name.strip() or None
+    user_metadata = {"role": ROLE_ANNOTATOR}
+    if cleaned_name:
+        user_metadata["full_name"] = cleaned_name
 
     auth_user = _safe(
         "create_annotator_account.auth.create_user",
@@ -157,7 +203,7 @@ def create_annotator_account(
                 "email": cleaned_email,
                 "password": password,
                 "email_confirm": True,
-                "user_metadata": {"full_name": cleaned_name} if cleaned_name else {},
+                "user_metadata": user_metadata,
             }
         ).user,
     )
@@ -270,6 +316,16 @@ def _get_assignment_enriched_rows(client: Client, annotator_id: Optional[str] = 
 def get_assignments_for_admin(client: Client) -> list[dict[str, Any]]:
     rows = _get_assignment_enriched_rows(client)
     return sorted(rows, key=lambda r: r.get("assigned_at") or "", reverse=True)
+
+
+def get_document_overview(client: Client) -> list[dict[str, Any]]:
+    documents = get_documents(client)
+    segments = get_all_segments(client)
+    assignments = _safe(
+        "get_document_overview.assignments",
+        lambda: client.table(TABLES.assignments).select("segment_id,status").execute().data or [],
+    )
+    return build_document_overview_rows(documents, segments, assignments)
 
 
 def get_assignments_for_annotator(client: Client, user_id: str) -> list[dict[str, Any]]:

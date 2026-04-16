@@ -55,6 +55,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Za lokalni development + testove:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ## Konfiguracija (`secrets.toml`)
 
 Kreiraj fajl `.streamlit/secrets.toml` (lokalno, ne commit-ovati):
@@ -132,8 +138,13 @@ pytest -q
 python -m compileall app src
 ```
 
+Napomena:
+- `requirements.txt` sadrzi samo runtime zavisnosti za deploy.
+- `requirements-dev.txt` dodaje test/development pakete.
+
 ## Security / RLS napomena
 
 - Annotator read/write tok koristi ANON klijent i očekuje RLS policy pravila na Supabase tabelama.
 - Admin tok koristi service role za administrativne operacije.
+- Primer RLS policy skripte nalazi se u `supabase/rls_policies.sql`.
 - Nemojte commit-ovati `.streamlit/secrets.toml`.
