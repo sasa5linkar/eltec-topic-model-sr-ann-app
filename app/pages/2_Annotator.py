@@ -95,7 +95,7 @@ if not assignments:
     raise SystemExit(0)
 
 st.subheader("My tasks")
-st.dataframe(_build_task_table(assignments), use_container_width=True)
+st.dataframe(_build_task_table(assignments), width="stretch")
 
 options = {_task_label(task): task for task in assignments}
 selected_task = options[st.selectbox("Open task", list(options.keys()))]

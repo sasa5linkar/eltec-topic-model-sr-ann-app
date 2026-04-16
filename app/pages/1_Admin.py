@@ -132,7 +132,7 @@ def _render_documents_overview(service_client: Any) -> None:
                 "assignment_coverage",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -243,7 +243,7 @@ def _render_import_section(service_client: Any, user: dict[str, Any]) -> None:
         return
 
     st.write(f"Prepared segments: **{len(candidate_segments)}**")
-    st.dataframe(pd.DataFrame(candidate_segments), use_container_width=True)
+    st.dataframe(pd.DataFrame(candidate_segments), width="stretch")
 
     if st.button("Confirm document import", type="primary"):
         try:
@@ -321,7 +321,7 @@ def _render_themes(service_client: Any) -> None:
     themes = get_themes(service_client)
 
     with themes_col:
-        st.dataframe(pd.DataFrame(themes), use_container_width=True)
+        st.dataframe(pd.DataFrame(themes), width="stretch")
 
     with form_col:
         with st.form("theme_form"):
@@ -381,7 +381,7 @@ def _render_assignments(service_client: Any, user: dict[str, Any]) -> None:
     if segments_df.empty:
         st.info("This document does not have any segments yet.")
     else:
-        st.dataframe(segments_df[["id", "segment_order", "segment_label", "word_count"]], use_container_width=True)
+        st.dataframe(segments_df[["id", "segment_order", "segment_label", "word_count"]], width="stretch")
 
     annotator_options = {f"{annotator.get('email')} ({annotator.get('full_name') or '-'})": annotator for annotator in annotators}
     selected_annotator = annotator_options[st.selectbox("Annotator", list(annotator_options.keys()))]
@@ -426,7 +426,7 @@ def _render_progress(service_client: Any) -> None:
             }
         )
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch")
 
 
 def _render_export(service_client: Any, user: dict[str, Any]) -> None:
