@@ -19,6 +19,7 @@ from src.db import (
     create_segments,
     create_theme,
     delete_document,
+    delete_theme,
     get_document_overview,
     get_annotation_counts_by_segment,
     get_annotators,
@@ -45,6 +46,7 @@ IMPORT_NOTICE_KEY = "admin_import_notice"
 UPLOAD_WIDGET_COUNTER_KEY = "admin_upload_widget_counter"
 DELETE_NOTICE_KEY = "admin_delete_notice"
 DELETE_CONFIRM_COUNTER_KEY = "admin_delete_confirm_counter"
+THEME_NOTICE_KEY = "admin_theme_notice"
 
 
 def _available_segmentation_modes(parsed: ParsedDocument) -> list[str]:
@@ -312,9 +314,14 @@ def _render_themes(service_client: Any) -> None:
     st.markdown("---")
     st.subheader("Themes")
     themes_col, form_col = st.columns([2, 1])
+    theme_notice = st.session_state.pop(THEME_NOTICE_KEY, None)
+    if theme_notice:
+        st.success(theme_notice)
+
+    themes = get_themes(service_client)
 
     with themes_col:
-        st.dataframe(pd.DataFrame(get_themes(service_client)), use_container_width=True)
+        st.dataframe(pd.DataFrame(themes), use_container_width=True)
 
     with form_col:
         with st.form("theme_form"):
@@ -328,7 +335,27 @@ def _render_themes(service_client: Any) -> None:
             else:
                 try:
                     create_theme(service_client, new_theme_name, new_theme_description)
-                    st.success("Theme added.")
+                    st.session_state[THEME_NOTICE_KEY] = "Theme added."
+                    st.rerun()
+                except AppError as exc:
+                    st.error(str(exc))
+
+        st.markdown("---")
+        st.write("Delete theme")
+        if not themes:
+            st.info("There are no themes to delete.")
+        else:
+            theme_options = {f"{theme.get('name')} ({theme.get('id')})": theme for theme in themes}
+            with st.form("theme_delete_form"):
+                selected_theme_label = st.selectbox("Theme to delete", list(theme_options.keys()))
+                delete_submitted = st.form_submit_button("Delete theme")
+
+            if delete_submitted:
+                try:
+                    selected_theme = theme_options[selected_theme_label]
+                    delete_theme(service_client, selected_theme["id"])
+                    st.session_state[THEME_NOTICE_KEY] = f"Theme deleted: {selected_theme.get('name')}"
+                    st.rerun()
                 except AppError as exc:
                     st.error(str(exc))
 

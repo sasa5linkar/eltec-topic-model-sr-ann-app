@@ -12,7 +12,7 @@ import streamlit as st
 from supabase import Client, create_client
 
 from src.assignment_merge import build_document_overview_rows, index_by_id as _index_by_id, merge_assignment_rows
-from src.errors import map_supabase_error
+from src.errors import AppError, map_supabase_error
 from src.models import ROLE_ANNOTATOR, STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
 
 T = TypeVar("T")
@@ -181,6 +181,21 @@ def create_theme(client: Client, name: str, description: str) -> dict[str, Any]:
         "create_theme",
         lambda: client.table(TABLES.themes).insert({"name": name.strip(), "description": description.strip()}).execute().data[0],
     )
+
+
+def delete_theme(client: Client, theme_id: str) -> dict[str, Any]:
+    existing_annotations = _safe(
+        "delete_theme.annotations_lookup",
+        lambda: client.table(TABLES.annotations).select("id").eq("theme_id", theme_id).execute().data or [],
+    )
+    if existing_annotations:
+        raise AppError("Theme cannot be deleted because it is already used in saved annotations.")
+
+    deleted_rows = _safe(
+        "delete_theme",
+        lambda: client.table(TABLES.themes).delete().eq("id", theme_id).execute().data or [],
+    )
+    return deleted_rows[0] if deleted_rows else {}
 
 
 def create_annotator_account(

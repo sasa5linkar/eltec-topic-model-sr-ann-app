@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 from src.assignment_merge import build_document_overview_rows, merge_assignment_rows
-from src.db import create_annotator_account, delete_document
+import pytest
+
+from src.db import create_annotator_account, delete_document, delete_theme
+from src.errors import AppError
 
 
 def test_merge_assignment_rows_enriches_segment_document_profile() -> None:
@@ -144,3 +147,89 @@ def test_delete_document_removes_related_segments_assignments_and_annotations() 
     assert tables["segments"] == [{"id": "s3", "document_id": "d2"}]
     assert tables["assignments"] == [{"id": "a2", "segment_id": "s3"}]
     assert tables["annotations"] == [{"id": "n3", "segment_id": "s3"}]
+
+
+def test_delete_theme_removes_unused_theme() -> None:
+    class FakeExecute:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, tables: dict[str, list[dict]], table_name: str):
+            self.tables = tables
+            self.table_name = table_name
+            self.action = "select"
+            self.predicates: list = []
+
+        def select(self, _expr):
+            self.action = "select"
+            return self
+
+        def delete(self):
+            self.action = "delete"
+            return self
+
+        def eq(self, key, value):
+            self.predicates.append(lambda row, k=key, v=value: row.get(k) == v)
+            return self
+
+        def execute(self):
+            rows = self.tables[self.table_name]
+            matched = [dict(row) for row in rows if all(predicate(row) for predicate in self.predicates)]
+            if self.action == "delete":
+                self.tables[self.table_name] = [row for row in rows if not all(predicate(row) for predicate in self.predicates)]
+            return FakeExecute(matched)
+
+    tables = {
+        "themes": [{"id": "t1", "name": "War"}, {"id": "t2", "name": "Love"}],
+        "annotations": [],
+    }
+    fake_client = SimpleNamespace(table=lambda name: FakeQuery(tables, name))
+
+    deleted = delete_theme(fake_client, "t1")
+
+    assert deleted["id"] == "t1"
+    assert tables["themes"] == [{"id": "t2", "name": "Love"}]
+
+
+def test_delete_theme_rejects_used_theme() -> None:
+    class FakeExecute:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, tables: dict[str, list[dict]], table_name: str):
+            self.tables = tables
+            self.table_name = table_name
+            self.action = "select"
+            self.predicates: list = []
+
+        def select(self, _expr):
+            self.action = "select"
+            return self
+
+        def delete(self):
+            self.action = "delete"
+            return self
+
+        def eq(self, key, value):
+            self.predicates.append(lambda row, k=key, v=value: row.get(k) == v)
+            return self
+
+        def execute(self):
+            rows = self.tables[self.table_name]
+            matched = [dict(row) for row in rows if all(predicate(row) for predicate in self.predicates)]
+            if self.action == "delete":
+                self.tables[self.table_name] = [row for row in rows if not all(predicate(row) for predicate in self.predicates)]
+            return FakeExecute(matched)
+
+    tables = {
+        "themes": [{"id": "t1", "name": "War"}],
+        "annotations": [{"id": "a1", "theme_id": "t1"}],
+    }
+    fake_client = SimpleNamespace(table=lambda name: FakeQuery(tables, name))
+
+    with pytest.raises(AppError, match="already used"):
+        delete_theme(fake_client, "t1")
+
+    assert tables["themes"] == [{"id": "t1", "name": "War"}]
