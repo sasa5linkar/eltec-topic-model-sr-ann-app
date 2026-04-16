@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 import streamlit as st
-from supabase import Client
 
 from src.auth import get_current_user
 from src.db import get_client
 from src.errors import AppError
+from src.supabase_compat import Client
 
 
 def load_authenticated_page(

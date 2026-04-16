@@ -7,12 +7,12 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import streamlit as st
-from supabase import Client
 
 from src.db import get_profiles
 from src.errors import AuthenticationError, map_supabase_error
 from src.logging_utils import get_logger, log_event
 from src.models import ROLE_ADMIN, ROLE_ANNOTATOR, TABLES
+from src.supabase_compat import Client
 
 AUTH_CALLBACK_KEYS = (
     "code",

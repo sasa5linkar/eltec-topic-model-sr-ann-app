@@ -9,11 +9,11 @@ from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
-from supabase import Client, create_client
 
 from src.assignment_merge import build_document_overview_rows, index_by_id as _index_by_id, merge_assignment_rows
 from src.errors import AppError, map_supabase_error
 from src.models import ROLE_ANNOTATOR, STATUS_ASSIGNED, STATUS_COMPLETED, TABLES
+from src.supabase_compat import Client, create_client
 
 T = TypeVar("T")
 
